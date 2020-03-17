@@ -1,7 +1,7 @@
 from telegram.ext import Updater,CallbackContext
 from telegram import Update
 import configparser
-import logging
+import logging, pytimeparse
 import scraper
 from telegram.ext import CommandHandler, MessageHandler, Filters
 
@@ -13,6 +13,7 @@ config.read('config.ini')
 
 DEFAULT_INTEVAL = 10
 
+# TODO:修改歡迎詞
 def start(update, context):
     context.bot.send_message(chat_id=update.effective_chat.id, text="I'm a bot, please talk to me!")
 
@@ -25,9 +26,8 @@ def callback_post_check(context: CallbackContext):
         # 檢查最新貼文與上次是否相同
         if scarp_args['prev'] == newly_scrap['url']:
             return
-            # context.bot.send_message(chat_id=context.job.context['id'], text= '重複')
         # 檢查排除關鍵字
-        elif scarp_args['exclude']:
+        elif 'exclude' in scarp_args:
             for term in scarp_args['exclude']:
                 if term in newly_scrap['title']:
                     scarp_args['prev'] = newly_scrap['url']
@@ -45,6 +45,7 @@ def callback_post_check(context: CallbackContext):
             chat_id = scarp_args['id'], 
             text= ''.join([newly_scrap['content'],"\ncheck input"]))
 
+# TODO:過濾不正確參數 / error handling
 def callback_post_set(update:Update, context: CallbackContext):
     # 不正確的參數就排除
     if not context.args or len(context.args)>3:
@@ -52,21 +53,34 @@ def callback_post_set(update:Update, context: CallbackContext):
 
     # 由後依序處理參數
     else:
-        excludeList = context.args[2].split('/') if len(context.args)==3 else ''
+        input_interval = DEFAULT_INTEVAL
+        scarp_args = {'id':update.effective_chat.id, 'boardname':context.args[0], 'prev':''}
+        if len(context.args) >1:
+            excludeList = context.args[2].split('/') if len(context.args)==3 else None
+            scarp_args.update({'exclude':excludeList})
 
-        input_interval = context.args[1] if isinstance(context.args[1],int) else DEFAULT_INTEVAL
-        if input_interval == DEFAULT_INTEVAL:
-            context.bot.send_message(chat_id=update.effective_chat.id, text="USE DEFAULT.")
+            int_or_parse = (lambda x: int(x) if x.isdigit() else pytimeparse.parse(x))
+            input_interval = (lambda x:(x*60) if x is not None and x > DEFAULT_INTEVAL else DEFAULT_INTEVAL)(int_or_parse(context.args[1]))
+            if input_interval == DEFAULT_INTEVAL:
+                context.bot.send_message(chat_id=update.effective_chat.id, text="USE DEFAULT.")
 
-        scarp_args ={'id':update.effective_chat.id, 'boardname':context.args[0],'exclude':excludeList, 'prev':''}
         job.run_repeating(callback_post_check, interval=input_interval, first=0, context=scarp_args)
+        logging.info(job.jobs()[0].context)
         context.bot.send_message(chat_id=update.effective_chat.id, text="Job set.")
 
 def callback_job_cancel(update:Update, context: CallbackContext):
     job.stop()
     context.bot.send_message(chat_id=update.effective_chat.id, text="Job canceled.")
 
-#TODO: 檢查JOB狀態
+def callback_show_status(update:Update, context: CallbackContext):
+    current_job = job.jobs()[0]
+    exclude_term = "無" if not 'exclude' in current_job.context else current_job.context['exclude']
+    status_output = (f"指定看板：{current_job.context['boardname']} \n"
+    f"檢查間隔：{int(current_job.interval/60)} （分鐘）\n"
+    f"排除關鍵字：{'/'.join(exclude_term)}\n"
+    f"最後抓取值：{current_job.context['prev']}\n")
+
+    context.bot.send_message(chat_id=update.effective_chat.id, text= status_output)
 
 ### Bot set-up ###
 
@@ -79,9 +93,11 @@ job = updater.job_queue
 start_handler = CommandHandler('start', start)
 dispatcher.add_handler(start_handler)
 
+status_handler = CommandHandler('status', callback_show_status)
 check_handler = CommandHandler('check', callback_post_set)
 cancel_handler = CommandHandler('cancel',callback_job_cancel)
 dispatcher.add_handler(check_handler)
 dispatcher.add_handler(cancel_handler)
+dispatcher.add_handler(status_handler)
 
 updater.start_polling()
