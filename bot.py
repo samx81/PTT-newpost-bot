@@ -12,6 +12,7 @@ config = configparser.ConfigParser()
 config.read('config.ini')
 
 DEFAULT_INTEVAL = 10
+MAX_JOB_PER_ID = 4
 
 # TODO:修改歡迎詞
 def start(update, context):
@@ -44,9 +45,14 @@ def callback_post_check(context: CallbackContext):
         context.bot.send_message(
             chat_id = scarp_args['id'], 
             text= ''.join([newly_scrap['content'],"\ncheck input"]))
-
-# TODO:過濾不正確參數 / error handling
+# TODO:過濾不正確參數 / error handling / 過濾重複看板(boardname as job name)
 def callback_post_set(update:Update, context: CallbackContext):
+    # 最大任務數
+    joblist = joblist_retrieve(update.effective_chat.id)
+    if  len(joblist)>= MAX_JOB_PER_ID:
+        context.bot.send_message(chat_id=update.effective_chat.id, text="job full")
+        return
+
     # 不正確的參數就排除
     if not context.args or len(context.args)>3:
         context.bot.send_message(chat_id=update.effective_chat.id, text="check args.")
@@ -64,14 +70,16 @@ def callback_post_set(update:Update, context: CallbackContext):
             if input_interval == DEFAULT_INTEVAL:
                 context.bot.send_message(chat_id=update.effective_chat.id, text="USE DEFAULT.")
 
-        job.run_repeating(callback_post_check, interval=input_interval, first=0, context=scarp_args)
-        logging.info(job.jobs()[0].context)
+        joblist.append(job.run_repeating(callback_post_check, interval=input_interval, first=0, context=scarp_args))
+        logging.info(joblist_retrieve(update.effective_chat.id))
         context.bot.send_message(chat_id=update.effective_chat.id, text="Job set.")
 
+# TODO:改掉單純 JobQueue.stop -> 挑選 job 來取消
+# if list empty > remove item in dict?
 def callback_job_cancel(update:Update, context: CallbackContext):
     job.stop()
     context.bot.send_message(chat_id=update.effective_chat.id, text="Job canceled.")
-
+# TODO: list all job with index in front
 def callback_show_status(update:Update, context: CallbackContext):
     current_job = job.jobs()[0]
     exclude_term = "無" if not 'exclude' in current_job.context else current_job.context['exclude']
@@ -82,6 +90,14 @@ def callback_show_status(update:Update, context: CallbackContext):
 
     context.bot.send_message(chat_id=update.effective_chat.id, text= status_output)
 
+def joblist_retrieve(user_id:str) -> list :
+    if user_id not in track_job_dict:
+        templist = list()
+        track_job_dict.update({user_id:templist})
+        return templist
+    else:
+        return track_job_dict[user_id]
+
 ### Bot set-up ###
 
 # replace token you got
@@ -89,6 +105,7 @@ updater = Updater(token=config['telegram-bot']['token'],use_context=True)
 
 dispatcher = updater.dispatcher
 job = updater.job_queue
+track_job_dict = dict() # Access by ID
 
 start_handler = CommandHandler('start', start)
 dispatcher.add_handler(start_handler)
