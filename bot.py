@@ -138,8 +138,14 @@ def joblist_retrieve(user_id:str) -> list :
 ### Bot set-up ###
 
 # replace token you got
-# updater = Updater(token=config['telegram-bot']['token'],use_context=True)
-updater = Updater(token=os.environ.get('TOKEN'),use_context=True)
+
+# Heroku webhook
+TOKEN = os.environ.get('TOKEN',"")
+PORT = int(os.environ.get('PORT','8443'))
+if TOKEN :
+    updater = Updater(token=TOKEN,use_context=True)  # which means on heroku
+else:
+    updater = Updater(token=config['telegram-bot']['token'],use_context=True) # local dev
 
 dispatcher = updater.dispatcher
 job = updater.job_queue
@@ -160,4 +166,9 @@ dispatcher.add_handler(cancel_handler)
 dispatcher.add_handler(status_handler)
 dispatcher.add_handler(job_select_handler)
 
-updater.start_polling()
+if TOKEN:
+    updater.start_webhook(listen="0.0.0.0",port=PORT,url_path=TOKEN)
+    updater.bot.set_webhook("https://ptt-newpost-bot.herokuapp.com/"+TOKEN)
+    updater.idle()
+else:
+    updater.start_polling()
