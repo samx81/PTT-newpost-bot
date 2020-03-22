@@ -11,7 +11,7 @@ logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s
 config = configparser.ConfigParser()
 config.read('config.ini')
 
-DEFAULT_INTEVAL = 10
+DEFAULT_INTEVAL = 60
 MAX_JOB_PER_ID = 4
 
 WELCOME_PHASE = """這裏是 PTT 新文章檢查小幫手，請使用
