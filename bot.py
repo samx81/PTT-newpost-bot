@@ -1,6 +1,6 @@
 from telegram.ext import Updater,CallbackContext
 from telegram import Update,ParseMode, InlineKeyboardButton, InlineKeyboardMarkup
-import configparser
+import configparser, os
 import logging, pytimeparse
 import scraper
 from telegram.ext import CommandHandler, MessageHandler,CallbackQueryHandler , Filters
@@ -138,7 +138,8 @@ def joblist_retrieve(user_id:str) -> list :
 ### Bot set-up ###
 
 # replace token you got
-updater = Updater(token=config['telegram-bot']['token'],use_context=True)
+# updater = Updater(token=config['telegram-bot']['token'],use_context=True)
+updater = Updater(token=os.environ.get('TOKEN'),use_context=True)
 
 dispatcher = updater.dispatcher
 job = updater.job_queue
