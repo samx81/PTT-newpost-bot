@@ -6,12 +6,13 @@ import scraper
 from telegram.ext import CommandHandler, MessageHandler,CallbackQueryHandler , Filters
 
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                     level=logging.DEBUG)
+                     level=logging.INFO)
 
 config = configparser.ConfigParser()
 config.read('config.ini')
 
-DEFAULT_INTEVAL = 60
+MINUTE = 60
+DEFAULT_INTEVAL = int(os.environ.get('INTEVAL','30'))*MINUTE
 MAX_JOB_PER_ID = 4
 
 WELCOME_PHASE = """這裏是 PTT 新文章檢查小幫手，請使用
@@ -76,13 +77,15 @@ def callback_post_set(update:Update, context: CallbackContext):
 
             # 檢查數字輸入
             int_or_parse = (lambda x: int(x) if x.isdigit() else pytimeparse.parse(x))
-            input_interval = (lambda x:(x*60) if x is not None and x > DEFAULT_INTEVAL else DEFAULT_INTEVAL)(int_or_parse(context.args[1]))
+            input_interval = (lambda x:(x*MINUTE) if x is not None and x > DEFAULT_INTEVAL \
+                else DEFAULT_INTEVAL)(int_or_parse(context.args[1]))
+
             if input_interval == DEFAULT_INTEVAL:
                 context.bot.send_message(chat_id=update.effective_chat.id, text="使用預設檢查間隔")
 
         joblist.append(job.run_repeating(callback_post_check, interval=input_interval,
                          first=0, context=scarp_args,name= context.args[0]))  # args[0] = boardname
-        logging.info(joblist_retrieve(update.effective_chat.id))
+        logging.info(f'The interval of this job is :{input_interval} secs')
         context.bot.send_message(chat_id=update.effective_chat.id, text="任務已增加，可使用 /status 查詢狀態")
 
 # if list empty > remove item in dict?
@@ -100,7 +103,6 @@ def callback_job_remove(update:Update, context: CallbackContext):
 
 def callback_job_rm_select(update:Update, context: CallbackContext):
     query = update.callback_query
-    logging.info(update.effective_chat.id)
     joblist = joblist_retrieve(update.effective_chat.id)
     for job in joblist:
         if job.name == query.data:
