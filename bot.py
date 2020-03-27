@@ -78,6 +78,7 @@ def save_jobs(jq):
 
                 # Pickle the job
                 pickle.dump((next_t, data, state), fp)
+                logging.info(f'saved job: {job.name} {job.removed}')
 
 
 def save_jobs_job(context):
@@ -87,16 +88,22 @@ def extBoardName(jobname: str):
     return jobname.partition('.')[2]
 
 def extUserId(jobname: str):
-    return jobname.partition('.')[0]
+    return int(jobname.partition('.')[0])
 
 
 def tidyup_jobs():
     for job in jobq.jobs():
+        # This job is always created at the start
+        if job.name == 'save_jobs_job': continue
+        if job.removed: continue
+
+        logging.info(f'read job: {job.name} {job.removed}')
         user_list = joblist_retrieve(extUserId(job.name))
         user_list.append(job)
 
 # TODO: Ignore 公告
 # TODO: Ignore 已刪除文章
+# TODO: if same name exists -> ignore
 def callback_post_check(context: CallbackContext):
     scarp_args = context.job.context
 
@@ -115,10 +122,11 @@ def callback_post_check(context: CallbackContext):
         context.bot.send_message(chat_id=scarp_args['id'], text=output_str)
     else:
         context.job.schedule_removal()
+        job_remove_from_joblist(context.job.name)
         context.bot.send_message(
             chat_id = scarp_args['id'], 
             text= ''.join([newly_scrap['error'],"\n看板名輸入有誤，請檢查並重新輸入"]))
-            
+
 # TODO:過濾不正確參數 / error handling 
 def callback_post_set(update:Update, context: CallbackContext):
     # 最大任務數
@@ -167,15 +175,7 @@ def callback_job_remove(update:Update, context: CallbackContext):
 
 def callback_job_rm_selected(update:Update, context: CallbackContext):
     query = update.callback_query
-    joblist = joblist_retrieve(update.effective_user.id)
-    for job in joblist:
-        if job.name == query.data:
-            logging.info(f'{job.name} and {query.data}') 
-            job.schedule_removal()
-            try:
-                joblist_retrieve(update.effective_user.id).remove(job)
-            except ValueError as e:
-                logging.info(str(e))
+    job_remove_from_joblist(query.data)
 
     query.edit_message_text(text="{} 已撤回".format(extBoardName(query.data)))
 
@@ -195,7 +195,7 @@ def callback_show_status(update:Update, context: CallbackContext):
 def callback_cancel(update:Update, context: CallbackContext):
     context.bot.edit_message_text('已取消')
 
-def joblist_retrieve(user_id:str) -> list :
+def joblist_retrieve(user_id:int) -> list :
     if user_id not in track_job_dict:
         templist = list()
         track_job_dict.update({user_id:templist})
@@ -203,6 +203,16 @@ def joblist_retrieve(user_id:str) -> list :
     else:
         return track_job_dict[user_id]
 
+def job_remove_from_joblist(jobname):
+    joblist = joblist_retrieve(extUserId(jobname))
+    for job in joblist:
+        if job.name == jobname:
+            logging.info(f'{job.name} and {jobname}') 
+            job.schedule_removal()
+            try:
+                joblist_retrieve(extUserId(jobname)).remove(job)
+            except ValueError as e:
+                logging.info(str(e))
 
 
 ### Bot set-up ###
@@ -221,13 +231,15 @@ dispatcher = updater.dispatcher
 jobq = updater.job_queue
 # Periodically save jobs
 jobq.run_repeating(save_jobs_job, timedelta(minutes=1))
+track_job_dict = dict() # Access by ID
 try:
     load_jobs(jobq)
+    tidyup_jobs()
 
 except FileNotFoundError:
     # First run
     pass
-track_job_dict = dict() # Access by ID
+
 
 start_handler = CommandHandler('start', start)
 dispatcher.add_handler(start_handler)
