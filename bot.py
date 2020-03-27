@@ -1,12 +1,16 @@
-from telegram.ext import Updater,CallbackContext
+from telegram.ext import Updater,CallbackContext, Job
 from telegram import Update,ParseMode, InlineKeyboardButton, InlineKeyboardMarkup
-import configparser, os
-import logging, pytimeparse
+from time import time
+from datetime import timedelta
+import configparser, os, pickle
+import logging, pytimeparse,timesched
 import scraper
 from telegram.ext import CommandHandler, MessageHandler,CallbackQueryHandler , Filters
 
-logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-                     level=logging.INFO)
+logging.basicConfig(
+    handlers=[logging.FileHandler('telegram.log'),logging.StreamHandler()],
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.DEBUG)
 
 config = configparser.ConfigParser()
 config.read('config.ini')
@@ -19,46 +23,106 @@ WELCOME_PHASE = """這裏是 PTT 新文章檢查小幫手，請使用
 **/check \[看板]** \[_時間(可選)_] \[_排除詞(可選)_] 下達檢查指令，
 時間預設 60 分鐘檢查一次，排除詞格式為 (term1/term2/...)
 """
+POST_ITEM_TEMPLATE = "{}\nhttps://www.ptt.cc{}\n\n"
+
 
 def start(update, context):
     context.bot.send_message(chat_id=update.effective_chat.id, text=WELCOME_PHASE, parse_mode=ParseMode.MARKDOWN)
 
-# TODO: 維持關閉後記憶 / 改用 user_data 儲存資料？ / avoid flood 
+# TODO: avoid flood 
 
+JOBS_PICKLE = 'job_tuples.pickle'
+JOB_DATA = ('callback', 'interval', 'repeat', 'context', 'days', 'name', 'tzinfo')
+JOB_STATE = ('_remove', '_enabled')
+
+def load_jobs(jq):
+    with open(JOBS_PICKLE, 'rb') as fp:
+        while True:
+            try:
+                next_t, data, state = pickle.load(fp)
+            except EOFError:
+                break  # loaded all jobs
+
+            # New object with the same data
+            job = Job(**{var: val for var, val in zip(JOB_DATA, data)})
+
+            # Restore the state it had
+            for var, val in zip(JOB_STATE, state):
+                attribute = getattr(job, var)
+                getattr(attribute, 'set' if val else 'clear')()
+
+            job.job_queue = jq
+
+            next_t -= time()  # convert from absolute to relative time
+
+            jq._put(job, next_t)
+
+def save_jobs(jq):
+    with jq._queue.mutex:  # in case job_queue makes a change
+
+        if jq:
+            job_tuples = jq._queue.queue
+        else:
+            job_tuples = []
+
+        with open(JOBS_PICKLE, 'wb') as fp:
+            for next_t, job in job_tuples:
+
+                # This job is always created at the start
+                if job.name == 'save_jobs_job':
+                    continue
+
+                # Threading primitives are not pickleable
+                data = tuple(getattr(job, var) for var in JOB_DATA)
+                state = tuple(getattr(job, var).is_set() for var in JOB_STATE)
+
+                # Pickle the job
+                pickle.dump((next_t, data, state), fp)
+
+
+def save_jobs_job(context):
+    save_jobs(context.job_queue)
+
+def extBoardName(jobname: str):
+    return jobname.partition('.')[2]
+
+def extUserId(jobname: str):
+    return jobname.partition('.')[0]
+
+
+def tidyup_jobs():
+    for job in jobq.jobs():
+        user_list = joblist_retrieve(extUserId(job.name))
+        user_list.append(job)
 
 # TODO: Ignore 公告
+# TODO: Ignore 已刪除文章
 def callback_post_check(context: CallbackContext):
     scarp_args = context.job.context
-    newly_scrap = scraper.getNewPost(context.job.name)
+
+    newly_scrap = scraper.getNewPosts(extBoardName(context.job.name), scarp_args['prev'])
 
     logging.info("Job name is {}".format(context.job.name))
     
     if newly_scrap['status']: 
-
-        # 檢查最新貼文與上次是否相同
-        if scarp_args['prev'] == newly_scrap['url']:
+        if newly_scrap['posts'] == scraper.NO_NEW_POST:
             return
-        # 檢查排除關鍵字
-        elif 'exclude' in scarp_args:
-            for term in scarp_args['exclude']:
-                if term in newly_scrap['title']:
-                    scarp_args['prev'] = newly_scrap['url']
-                    return
-        
-        output_str = "{}\nhttps://www.ptt.cc{}"
-        output_str = output_str.format(newly_scrap['title'],newly_scrap['url'])
+        output_str = ""
+        for post in newly_scrap['posts']:
+            output_str += POST_ITEM_TEMPLATE.format(post['title'],post['url'])
 
-        scarp_args['prev'] = newly_scrap['url']
+        scarp_args['prev'] = newly_scrap['posts'][-1]['url']
         context.bot.send_message(chat_id=scarp_args['id'], text=output_str)
     else:
         context.job.schedule_removal()
         context.bot.send_message(
             chat_id = scarp_args['id'], 
-            text= ''.join([newly_scrap['content'],"\n看板名輸入有誤，請檢查並重新輸入"]))
+            text= ''.join([newly_scrap['error'],"\n看板名輸入有誤，請檢查並重新輸入"]))
+            
 # TODO:過濾不正確參數 / error handling 
 def callback_post_set(update:Update, context: CallbackContext):
     # 最大任務數
-    joblist = joblist_retrieve(update.effective_chat.id)
+    joblist = joblist_retrieve(update.effective_user.id)
     if  len(joblist)>= MAX_JOB_PER_ID:
         context.bot.send_message(chat_id=update.effective_chat.id, text="任務已滿")
         return
@@ -83,8 +147,8 @@ def callback_post_set(update:Update, context: CallbackContext):
             if input_interval == DEFAULT_INTEVAL:
                 context.bot.send_message(chat_id=update.effective_chat.id, text="使用預設檢查間隔")
 
-        joblist.append(job.run_repeating(callback_post_check, interval=input_interval,
-                         first=0, context=scarp_args,name= context.args[0]))  # args[0] = boardname
+        joblist.append(jobq.run_repeating(callback_post_check, interval=input_interval,
+                         first=0, context=scarp_args,name= (f'{update.effective_user.id}.{context.args[0]}')))  # args[0] = boardname
         logging.info(f'The interval of this job is :{input_interval} secs')
         context.bot.send_message(chat_id=update.effective_chat.id, text="任務已增加，可使用 /status 查詢狀態")
 
@@ -92,8 +156,8 @@ def callback_post_set(update:Update, context: CallbackContext):
 def callback_job_remove(update:Update, context: CallbackContext):
     # job.stop()
     keyboard = []
-    for job in joblist_retrieve(update.effective_chat.id):
-        keyboard.append([InlineKeyboardButton(job.name,callback_data=job.name)])
+    for job in joblist_retrieve(update.effective_user.id):
+        keyboard.append([InlineKeyboardButton(extBoardName(job.name), callback_data=job.name)])
     
     if keyboard:
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -101,31 +165,33 @@ def callback_job_remove(update:Update, context: CallbackContext):
     else:
         context.bot.send_message(chat_id=update.effective_chat.id, text="尚無任務")
 
-def callback_job_rm_select(update:Update, context: CallbackContext):
+def callback_job_rm_selected(update:Update, context: CallbackContext):
     query = update.callback_query
-    joblist = joblist_retrieve(update.effective_chat.id)
+    joblist = joblist_retrieve(update.effective_user.id)
     for job in joblist:
         if job.name == query.data:
             logging.info(f'{job.name} and {query.data}') 
             job.schedule_removal()
             try:
-                joblist_retrieve(update.effective_chat.id).remove(job)
+                joblist_retrieve(update.effective_user.id).remove(job)
             except ValueError as e:
                 logging.info(str(e))
 
-    query.edit_message_text(text="{} 已撤回".format(query.data))
+    query.edit_message_text(text="{} 已撤回".format(extBoardName(query.data)))
 
 def callback_show_status(update:Update, context: CallbackContext):
     status_output = ""
-    for current_job in joblist_retrieve(update.effective_chat.id):
+    for current_job in joblist_retrieve(update.effective_user.id):
         exclude_term = "無" if not 'exclude' in current_job.context else current_job.context['exclude']
-        status_output += (f"指定看板：{current_job.name} \n"
+        status_output += (f"指定看板：{extBoardName(current_job.name)} \n"
         f"檢查間隔：{int(current_job.interval/60)} （分鐘）\n"
         f"排除關鍵字：{'/'.join(exclude_term)}\n"
         f"最後抓取值：https://www.ptt.cc{current_job.context['prev']}\n\n")
     if not status_output:
         status_output = "尚未安排任務"
     context.bot.send_message(chat_id=update.effective_chat.id, text= status_output)
+
+# let this cmd stick to remove cmd
 def callback_cancel(update:Update, context: CallbackContext):
     context.bot.edit_message_text('已取消')
 
@@ -137,6 +203,8 @@ def joblist_retrieve(user_id:str) -> list :
     else:
         return track_job_dict[user_id]
 
+
+
 ### Bot set-up ###
 
 # replace token you got
@@ -147,10 +215,18 @@ PORT = int(os.environ.get('PORT','8443'))
 if TOKEN :
     updater = Updater(token=TOKEN,use_context=True)  # which means on heroku
 else:
-    updater = Updater(token=config['telegram-bot']['token'],use_context=True) # local dev
+    updater = Updater(token=config['dev']['token'],use_context=True) # local dev
 
 dispatcher = updater.dispatcher
-job = updater.job_queue
+jobq = updater.job_queue
+# Periodically save jobs
+jobq.run_repeating(save_jobs_job, timedelta(minutes=1))
+try:
+    load_jobs(jobq)
+
+except FileNotFoundError:
+    # First run
+    pass
 track_job_dict = dict() # Access by ID
 
 start_handler = CommandHandler('start', start)
@@ -160,7 +236,7 @@ status_handler = CommandHandler('status', callback_show_status)
 check_handler = CommandHandler('check', callback_post_set)
 remove_handler = CommandHandler('remove',callback_job_remove)
 cancel_handler = CommandHandler('cancel',callback_cancel)
-job_select_handler = CallbackQueryHandler(callback_job_rm_select)
+job_select_handler = CallbackQueryHandler(callback_job_rm_selected)
 
 dispatcher.add_handler(check_handler)
 dispatcher.add_handler(remove_handler)
@@ -168,9 +244,15 @@ dispatcher.add_handler(cancel_handler)
 dispatcher.add_handler(status_handler)
 dispatcher.add_handler(job_select_handler)
 
+print("asd"+TOKEN)
 if TOKEN:
     updater.start_webhook(listen="0.0.0.0",port=PORT,url_path=TOKEN)
     updater.bot.set_webhook("https://ptt-newpost-bot.herokuapp.com/"+TOKEN)
     updater.idle()
+
+    save_jobs(jobq)
+
 else:
+    logging.info("using local")
     updater.start_polling()
+
