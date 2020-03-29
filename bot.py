@@ -25,6 +25,7 @@ WELCOME_PHASE = """這裏是 PTT 新文章檢查小幫手，請使用
 """
 POST_ITEM_TEMPLATE = "{}\nhttps://www.ptt.cc{}\n\n"
 
+# TODO: refactor code
 
 def start(update, context):
     context.bot.send_message(chat_id=update.effective_chat.id, text=WELCOME_PHASE, parse_mode=ParseMode.MARKDOWN)
@@ -106,8 +107,7 @@ def tidyup_jobs():
 # TODO: if same name exists -> ignore
 def callback_post_check(context: CallbackContext):
     scarp_args = context.job.context
-
-    scarp_args['prev'] = '/bbs/part-time/M.1584587742.A.B48.html'
+    
     newly_scrap = scraper.getNewPosts(extBoardName(context.job.name), scarp_args['prev'])
 
     logging.info("Job name is {}".format(context.job.name))
@@ -267,7 +267,6 @@ dispatcher.add_handler(cancel_handler)
 dispatcher.add_handler(status_handler)
 dispatcher.add_handler(job_select_handler)
 
-print("asd"+TOKEN)
 if TOKEN:
     updater.start_webhook(listen="0.0.0.0",port=PORT,url_path=TOKEN)
     updater.bot.set_webhook("https://ptt-newpost-bot.herokuapp.com/"+TOKEN)
