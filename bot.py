@@ -10,13 +10,13 @@ from telegram.ext import CommandHandler, MessageHandler,CallbackQueryHandler , F
 logging.basicConfig(
     handlers=[logging.FileHandler('telegram.log'),logging.StreamHandler()],
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.DEBUG)
+    level=logging.INFO)
 
 config = configparser.ConfigParser()
 config.read('config.ini')
 
 MINUTE = 60
-DEFAULT_INTEVAL = int(os.environ.get('INTEVAL','30'))*MINUTE
+DEFAULT_INTEVAL = int(os.environ.get('INTEVAL','15'))
 MAX_JOB_PER_ID = 4
 
 WELCOME_PHASE = """這裏是 PTT 新文章檢查小幫手，請使用
@@ -107,6 +107,7 @@ def tidyup_jobs():
 def callback_post_check(context: CallbackContext):
     scarp_args = context.job.context
 
+    scarp_args['prev'] = '/bbs/part-time/M.1584587742.A.B48.html'
     newly_scrap = scraper.getNewPosts(extBoardName(context.job.name), scarp_args['prev'])
 
     logging.info("Job name is {}".format(context.job.name))
@@ -114,12 +115,21 @@ def callback_post_check(context: CallbackContext):
     if newly_scrap['status']: 
         if newly_scrap['posts'] == scraper.NO_NEW_POST:
             return
+        if 'error' in newly_scrap:
+            context.bot.send_message(chat_id=scarp_args['id'], text= newly_scrap['error'])
         output_str = ""
         for post in newly_scrap['posts']:
-            output_str += POST_ITEM_TEMPLATE.format(post['title'],post['url'])
+            termMatch = False
+            if 'exclude' in scarp_args:
+                for term in scarp_args['exclude']:
+                    if term in post['title']:
+                        termMatch = True
+            if not termMatch:
+                output_str += POST_ITEM_TEMPLATE.format(post['title'],post['url'])
 
         scarp_args['prev'] = newly_scrap['posts'][-1]['url']
-        context.bot.send_message(chat_id=scarp_args['id'], text=output_str)
+        if output_str:
+            context.bot.send_message(chat_id=scarp_args['id'], text=output_str)
     else:
         context.job.schedule_removal()
         job_remove_from_joblist(context.job.name)
@@ -141,18 +151,19 @@ def callback_post_set(update:Update, context: CallbackContext):
 
     # 由後依序處理參數
     else:
-        input_interval = DEFAULT_INTEVAL
+        input_interval = DEFAULT_INTEVAL*MINUTE
         scarp_args = {'id':update.effective_chat.id,'prev':''}
         if len(context.args) >1:
-            excludeList = context.args[2].split('/') if len(context.args)==3 else None
-            scarp_args.update({'exclude':excludeList})
+            if len(context.args)==3:
+                excludeList = context.args[2].split('/')
+                scarp_args.update({'exclude':excludeList})
 
             # 檢查數字輸入
-            int_or_parse = (lambda x: int(x) if x.isdigit() else pytimeparse.parse(x))
-            input_interval = (lambda x:(x*MINUTE) if x is not None and x > DEFAULT_INTEVAL \
-                else DEFAULT_INTEVAL)(int_or_parse(context.args[1]))
+            int_or_parse = (lambda x: int(x) if x.isdigit() else pytimeparse.parse(x)/60)
+            input_interval = (lambda x:int(x*MINUTE) if x is not None and x > DEFAULT_INTEVAL and x <= 720 \
+                else DEFAULT_INTEVAL*MINUTE)(int_or_parse(context.args[1]))
 
-            if input_interval == DEFAULT_INTEVAL:
+            if input_interval == DEFAULT_INTEVAL*MINUTE:
                 context.bot.send_message(chat_id=update.effective_chat.id, text="使用預設檢查間隔")
 
         joblist.append(jobq.run_repeating(callback_post_check, interval=input_interval,

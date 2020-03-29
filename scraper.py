@@ -7,6 +7,7 @@ pttDomain = 'https://www.ptt.cc/bbs/{}'
 header = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36'
 NO_NEW_POST = 'No new post'
 def getNewPosts(boardname:str, lastTimeScraped: str= ""):
+    scrapedtime = 0
     try:
         bs = getBSObj(pttDomain.format(boardname + '/index.html'))
         if isinstance(bs,dict):
@@ -16,15 +17,23 @@ def getNewPosts(boardname:str, lastTimeScraped: str= ""):
         posts = bs.find(class_='r-list-sep').find_previous_siblings(class_='r-ent')
 
         while not doneScraped:
-            print('scraping' + str(time.time()))
+            if scrapedtime >10 : 
+                return({'status':False, 'error':'可能進入迴圈，中斷作業'})
+            
             doneScraped, templist = scrap(lastTimeScraped, posts)
             newpostList = templist + newpostList
             bs = getBSObj(pttDomain.format(getPrevPageLink(bs)))
             posts = bs.find_all(class_='r-ent')
             time.sleep(.5)
+            scrapedtime+=1
 
     except requests.exceptions.HTTPError as e:
         return({'status':False, 'error':str(e.response)})
+    except ValueError:
+        # 找無最後存取值，輸出最新文章
+        lastTimeScraped = ""
+        doneScraped, templist = scrap(lastTimeScraped, posts)
+        return({'status':True, 'posts': templist,'error':'找無最後存取值，輸出最新文章'})
     
     if newpostList:
         return({'status':True, 'posts': newpostList})
@@ -39,21 +48,27 @@ def getBSObj(link:str):
 
         return bs
     except requests.exceptions.HTTPError as e:
-        return ({'status':False, 'error':str(e.response)})
+        return ({'status':False, 'error':e})
 
 # TODO: 剔除公告文章
 def scrap(lastTimeScraped:str, posts):
     newpostList = []
     doneScraped = False
     if lastTimeScraped:
-        for post in posts:
-            titleItem = post.find(class_='title')
-            # 檢查最新貼文與上次是否相同
-            if lastTimeScraped == titleItem.a.get('href'):
-                doneScraped = True
-                break
-            else:
-                newpostList.insert(0, {'title':titleItem.a.get_text(), 'url':titleItem.a.get('href')})
+        # 檢查最後存取值是否還在文章列表中
+        tempbs = getBSObj(pttDomain.format(lastTimeScraped.replace('/bbs/',"")))
+        if not isinstance(tempbs, dict):
+            for post in posts:
+                titleItem = post.find(class_='title')
+                # 檢查最新貼文與上次是否相同
+                if lastTimeScraped == titleItem.a.get('href'):
+                    doneScraped = True
+                    break
+                else:
+                    newpostList.insert(0, {'title':titleItem.a.get_text(), 'url':titleItem.a.get('href')})
+        else:
+            print(pttDomain.format(lastTimeScraped) + 'No this post')
+            raise ValueError
     else:
         doneScraped = True
         try:
