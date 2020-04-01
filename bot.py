@@ -64,7 +64,7 @@ def save_jobs(jq):
             job_tuples = []
 
         # reset the key
-        logging.info('Try to save jobs:')
+        logging.debug('Try to save jobs:')
         try:
             redis_pool.delete('pickle')
 
@@ -81,7 +81,7 @@ def save_jobs(jq):
                 # Pickle the job
                 # RPUSH(item1), place item1 at rightmost of the list -> 'item0' - 'item1'
                 redis_pool.rpush('pickle', pickle.dumps((next_t, data, state))) 
-                logging.info(f'{job.name} {job.removed}')
+                logging.debug(f'{job.name} {job.removed}')
         except AttributeError:
             logging.info('Redis may not inited?')
 
@@ -100,7 +100,7 @@ def tidyup_jobs():
     for job in jobq.jobs():
         # This job is always created at the start
         if job.name == 'save_jobs_job': continue
-        # if job.removed: continue
+        if job.removed: continue
 
         logging.info(f'Read job: {job.name}, Removed? {job.removed}')
         user_list = joblist_retrieve(extUserId(job.name))
@@ -151,6 +151,11 @@ def callback_post_set(update:Update, context: CallbackContext):
     # 不正確的參數就排除
     if not context.args or len(context.args)>3:
         context.bot.send_message(chat_id=update.effective_chat.id, text="請檢查參數是否輸入正確")
+    
+    for job in joblist:
+        if context.args[0] == job.name:
+            context.bot.send_message(chat_id=update.effective_chat.id, text="此任務已存在，若需更改條件請先移除原有任務")
+            return
 
     # 由後依序處理參數
     else:
@@ -168,14 +173,10 @@ def callback_post_set(update:Update, context: CallbackContext):
 
             if input_interval == DEFAULT_INTEVAL*MINUTE:
                 context.bot.send_message(chat_id=update.effective_chat.id, text="使用預設檢查間隔")
-        jobnamef = (f'{update.effective_user.id}.{context.args[0]}')
-        if jobnamef in jobq.jobs():
-            context.bot.send_message(chat_id=update.effective_chat.id, text="此任務已存在，若需更改條件請先移除原有任務")
-        else:
-            joblist.append(jobq.run_repeating(callback_post_check, interval=input_interval,
-                            first=0, context=scarp_args,name= jobnamef))  # args[0] = boardname
-            logging.info(f'The interval of added job is :{input_interval} secs')
-            context.bot.send_message(chat_id=update.effective_chat.id, text="任務已增加，可使用 /status 查詢狀態")
+        joblist.append(jobq.run_repeating(callback_post_check, interval=input_interval,
+                        first=0, context=scarp_args,name= (f'{update.effective_user.id}.{context.args[0]}')))  # args[0] = boardname
+        logging.info(f'The interval of added job is :{input_interval} secs')
+        context.bot.send_message(chat_id=update.effective_chat.id, text="任務已增加，可使用 /status 查詢狀態")
 
 # if list empty > remove item in dict?
 def callback_job_remove(update:Update, context: CallbackContext):
@@ -224,7 +225,6 @@ def job_remove_from_joblist(jobname):
     joblist = joblist_retrieve(extUserId(jobname))
     for job in joblist:
         if job.name == jobname:
-            logging.info(f'{job.name} and {jobname}') 
             job.schedule_removal()
             try:
                 joblist_retrieve(extUserId(jobname)).remove(job)
