@@ -1,11 +1,10 @@
-from telegram.ext import Updater,CallbackContext, Job
-from telegram import Update,ParseMode, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import Updater, CallbackContext, Job, CommandHandler, MessageHandler,CallbackQueryHandler , Filters
+from telegram import Update, ParseMode, InlineKeyboardButton, InlineKeyboardMarkup
 from time import time
 from datetime import timedelta
-import configparser, os, pickle
-import logging, pytimeparse,timesched
+import configparser, os, pickle, logging
+import pytimeparse, timesched, redis
 import scraper
-from telegram.ext import CommandHandler, MessageHandler,CallbackQueryHandler , Filters
 
 logging.basicConfig(
     handlers=[logging.FileHandler('telegram.log'),logging.StreamHandler()],
@@ -32,31 +31,29 @@ def start(update, context):
 
 # TODO: avoid flood 
 
-JOBS_PICKLE = 'job_tuples.pickle'
 JOB_DATA = ('callback', 'interval', 'repeat', 'context', 'days', 'name', 'tzinfo')
 JOB_STATE = ('_remove', '_enabled')
 
 def load_jobs(jq):
-    with open(JOBS_PICKLE, 'rb') as fp:
-        while True:
-            try:
-                next_t, data, state = pickle.load(fp)
-            except EOFError:
-                break  # loaded all jobs
+    while True:
+        if redis_pool.exists('pickle'):
+            next_t, data, state = pickle.loads(redis_pool.lpop('pickle'))
+        else:
+            break  # loaded all jobs
 
-            # New object with the same data
-            job = Job(**{var: val for var, val in zip(JOB_DATA, data)})
+        # New object with the same data
+        job = Job(**{var: val for var, val in zip(JOB_DATA, data)})
 
-            # Restore the state it had
-            for var, val in zip(JOB_STATE, state):
-                attribute = getattr(job, var)
-                getattr(attribute, 'set' if val else 'clear')()
+        # Restore the state it had
+        for var, val in zip(JOB_STATE, state):
+            attribute = getattr(job, var)
+            getattr(attribute, 'set' if val else 'clear')()
 
-            job.job_queue = jq
+        job.job_queue = jq
+        logging.info(f'{job.name} {str(next_t)}, {str(time())}')
+        next_t -= time()  # convert from absolute to relative time
 
-            next_t -= time()  # convert from absolute to relative time
-
-            jq._put(job, next_t)
+        jq._put(job, next_t)
 
 def save_jobs(jq):
     with jq._queue.mutex:  # in case job_queue makes a change
@@ -66,7 +63,11 @@ def save_jobs(jq):
         else:
             job_tuples = []
 
-        with open(JOBS_PICKLE, 'wb') as fp:
+        # reset the key
+        logging.info('Try to save jobs:')
+        try:
+            redis_pool.delete('pickle')
+
             for next_t, job in job_tuples:
 
                 # This job is always created at the start
@@ -78,8 +79,11 @@ def save_jobs(jq):
                 state = tuple(getattr(job, var).is_set() for var in JOB_STATE)
 
                 # Pickle the job
-                pickle.dump((next_t, data, state), fp)
-                logging.info(f'saved job: {job.name} {job.removed}')
+                # RPUSH(item1), place item1 at rightmost of the list -> 'item0' - 'item1'
+                redis_pool.rpush('pickle', pickle.dumps((next_t, data, state))) 
+                logging.info(f'{job.name} {job.removed}')
+        except AttributeError:
+            logging.info('Redis may not inited?')
 
 
 def save_jobs_job(context):
@@ -96,21 +100,18 @@ def tidyup_jobs():
     for job in jobq.jobs():
         # This job is always created at the start
         if job.name == 'save_jobs_job': continue
-        if job.removed: continue
+        # if job.removed: continue
 
-        logging.info(f'read job: {job.name} {job.removed}')
+        logging.info(f'Read job: {job.name}, Removed? {job.removed}')
         user_list = joblist_retrieve(extUserId(job.name))
         user_list.append(job)
 
-# TODO: Ignore 公告
-# TODO: Ignore 已刪除文章
-# TODO: if same name exists -> ignore
 def callback_post_check(context: CallbackContext):
     scarp_args = context.job.context
     
     newly_scrap = scraper.getNewPosts(extBoardName(context.job.name), scarp_args['prev'])
 
-    logging.info("Job name is {}".format(context.job.name))
+    logging.info("Now running: {}".format(context.job.name))
     
     if newly_scrap['status']: 
         if newly_scrap['posts'] == scraper.NO_NEW_POST:
@@ -120,6 +121,8 @@ def callback_post_check(context: CallbackContext):
         output_str = ""
         for post in newly_scrap['posts']:
             termMatch = False
+            if '[公告]' in post['title']:
+                termMatch = True
             if 'exclude' in scarp_args:
                 for term in scarp_args['exclude']:
                     if term in post['title']:
@@ -165,11 +168,14 @@ def callback_post_set(update:Update, context: CallbackContext):
 
             if input_interval == DEFAULT_INTEVAL*MINUTE:
                 context.bot.send_message(chat_id=update.effective_chat.id, text="使用預設檢查間隔")
-
-        joblist.append(jobq.run_repeating(callback_post_check, interval=input_interval,
-                         first=0, context=scarp_args,name= (f'{update.effective_user.id}.{context.args[0]}')))  # args[0] = boardname
-        logging.info(f'The interval of this job is :{input_interval} secs')
-        context.bot.send_message(chat_id=update.effective_chat.id, text="任務已增加，可使用 /status 查詢狀態")
+        jobnamef = (f'{update.effective_user.id}.{context.args[0]}')
+        if jobnamef in jobq.jobs():
+            context.bot.send_message(chat_id=update.effective_chat.id, text="此任務已存在，若需更改條件請先移除原有任務")
+        else:
+            joblist.append(jobq.run_repeating(callback_post_check, interval=input_interval,
+                            first=0, context=scarp_args,name= jobnamef))  # args[0] = boardname
+            logging.info(f'The interval of added job is :{input_interval} secs')
+            context.bot.send_message(chat_id=update.effective_chat.id, text="任務已增加，可使用 /status 查詢狀態")
 
 # if list empty > remove item in dict?
 def callback_job_remove(update:Update, context: CallbackContext):
@@ -228,8 +234,16 @@ def job_remove_from_joblist(jobname):
 
 ### Bot set-up ###
 
-# replace token you got
+# Heroku using redis to make JobQueue being presistance 
+redis_url = os.getenv('REDISTOGO_URL', 'redis://localhost:6379')
+redis_pool = redis.from_url(redis_url)
+try:
+    redis_pool.ping()
+    logging.info('Redis server connected: {}'.format(redis_url[8:14]))
+except redis.ConnectionError as e:
+    logging.info(str(e.with_traceback))
 
+# replace token you got
 # Heroku webhook
 TOKEN = os.environ.get('TOKEN',"")
 PORT = int(os.environ.get('PORT','8443'))
@@ -275,6 +289,6 @@ if TOKEN:
     save_jobs(jobq)
 
 else:
-    logging.info("using local")
+    logging.info("Running local")
     updater.start_polling()
 

@@ -1,7 +1,12 @@
 from urllib.request import urlopen
 import requests
-import timesched,time
+import timesched,time, logging
 from bs4 import BeautifulSoup
+
+logging.basicConfig(
+    handlers=[logging.FileHandler('scraper.log'),logging.StreamHandler()],
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=logging.INFO)
 
 pttDomain = 'https://www.ptt.cc/bbs/{}'
 header = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36'
@@ -61,11 +66,15 @@ def scrap(lastTimeScraped:str, posts):
             for post in posts:
                 titleItem = post.find(class_='title')
                 # 檢查最新貼文與上次是否相同
-                if lastTimeScraped == titleItem.a.get('href'):
-                    doneScraped = True
-                    break
-                else:
-                    newpostList.insert(0, {'title':titleItem.a.get_text(), 'url':titleItem.a.get('href')})
+                try:
+                    if lastTimeScraped == titleItem.a.get('href'):
+                        doneScraped = True
+                        break
+                    else:
+                        newpostList.insert(0, {'title':titleItem.a.get_text(), 'url':titleItem.a.get('href')})
+                except AttributeError as e: # A post may be deleted, skip this post
+                    logging.info(str(e))
+                    continue
         else:
             print(pttDomain.format(lastTimeScraped) + 'No this post')
             raise ValueError
