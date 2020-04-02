@@ -34,6 +34,9 @@ def start(update, context):
 JOB_DATA = ('callback', 'interval', 'repeat', 'context', 'days', 'name', 'tzinfo')
 JOB_STATE = ('_remove', '_enabled')
 
+# These snippet is copyed from package's wiki, modified to save on redis
+# https://github.com/python-telegram-bot/python-telegram-bot/wiki/Code-snippets#save-and-load-jobs-using-pickle
+
 def load_jobs(jq):
     while True:
         if redis_pool.exists('pickle'):
@@ -50,7 +53,6 @@ def load_jobs(jq):
             getattr(attribute, 'set' if val else 'clear')()
 
         job.job_queue = jq
-        logging.info(f'{job.name} {str(next_t)}, {str(time())}')
         next_t -= time()  # convert from absolute to relative time
 
         jq._put(job, next_t)
@@ -95,7 +97,8 @@ def extBoardName(jobname: str):
 def extUserId(jobname: str):
     return int(jobname.partition('.')[0])
 
-
+# Using extra list to organize user's jobs
+# Iterate every job in JobQueue to append to list
 def tidyup_jobs():
     for job in jobq.jobs():
         # This job is always created at the start
@@ -106,21 +109,23 @@ def tidyup_jobs():
         user_list = joblist_retrieve(extUserId(job.name))
         user_list.append(job)
 
-def callback_post_check(context: CallbackContext):
+def post_check(context: CallbackContext):
     scarp_args = context.job.context
     
-    newly_scrap = scraper.getNewPosts(extBoardName(context.job.name), scarp_args['prev'])
+    new_scrap = scraper.getNewPosts(extBoardName(context.job.name), scarp_args['prev'])
 
     logging.info("Now running: {}".format(context.job.name))
     
-    if newly_scrap['status']: 
-        if newly_scrap['posts'] == scraper.NO_NEW_POST:
+    if new_scrap['success']: 
+        if new_scrap['posts'] == scraper.NO_NEW_POST:
             return
-        if 'error' in newly_scrap:
-            context.bot.send_message(chat_id=scarp_args['id'], text= newly_scrap['error'])
+        if 'error' in new_scrap:
+            context.bot.send_message(chat_id=scarp_args['id'], text= new_scrap['error'])
         output_str = ""
-        for post in newly_scrap['posts']:
+        for post in new_scrap['posts']:
             termMatch = False
+            # 各種條件過濾
+
             if '[公告]' in post['title']:
                 termMatch = True
             if 'exclude' in scarp_args:
@@ -130,15 +135,15 @@ def callback_post_check(context: CallbackContext):
             if not termMatch:
                 output_str += POST_ITEM_TEMPLATE.format(post['title'],post['url'])
 
-        scarp_args['prev'] = newly_scrap['posts'][-1]['url']
+        scarp_args['prev'] = new_scrap['posts'][-1]['url']
         if output_str:
             context.bot.send_message(chat_id=scarp_args['id'], text=output_str)
     else:
         context.job.schedule_removal()
-        job_remove_from_joblist(context.job.name)
+        remove_from_joblist(context.job.name)
         context.bot.send_message(
             chat_id = scarp_args['id'], 
-            text= ''.join([newly_scrap['error'],"\n看板名輸入有誤，請檢查並重新輸入"]))
+            text= ''.join([new_scrap['error'],"\n看板名輸入有誤，請檢查並重新輸入"]))
 
 # TODO:過濾不正確參數 / error handling 
 def callback_post_set(update:Update, context: CallbackContext):
@@ -173,7 +178,8 @@ def callback_post_set(update:Update, context: CallbackContext):
 
             if input_interval == DEFAULT_INTEVAL*MINUTE:
                 context.bot.send_message(chat_id=update.effective_chat.id, text="使用預設檢查間隔")
-        joblist.append(jobq.run_repeating(callback_post_check, interval=input_interval,
+        joblist.append(jobq.run_repeating(
+        post_check, interval=input_interval,
                         first=0, context=scarp_args,name= (f'{update.effective_user.id}.{context.args[0]}')))  # args[0] = boardname
         logging.info(f'The interval of added job is :{input_interval} secs')
         context.bot.send_message(chat_id=update.effective_chat.id, text="任務已增加，可使用 /status 查詢狀態")
@@ -193,7 +199,7 @@ def callback_job_remove(update:Update, context: CallbackContext):
 
 def callback_job_rm_selected(update:Update, context: CallbackContext):
     query = update.callback_query
-    job_remove_from_joblist(query.data)
+    remove_from_joblist(query.data)
 
     query.edit_message_text(text="{} 已撤回".format(extBoardName(query.data)))
 
@@ -221,7 +227,7 @@ def joblist_retrieve(user_id:int) -> list :
     else:
         return track_job_dict[user_id]
 
-def job_remove_from_joblist(jobname):
+def remove_from_joblist(jobname):
     joblist = joblist_retrieve(extUserId(jobname))
     for job in joblist:
         if job.name == jobname:
