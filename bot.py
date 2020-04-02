@@ -156,14 +156,12 @@ def callback_post_set(update:Update, context: CallbackContext):
     # 不正確的參數就排除
     if not context.args or len(context.args)>3:
         context.bot.send_message(chat_id=update.effective_chat.id, text="請檢查參數是否輸入正確")
-    
-    for job in joblist:
-        if context.args[0] == job.name:
-            context.bot.send_message(chat_id=update.effective_chat.id, text="此任務已存在，若需更改條件請先移除原有任務")
-            return
-
     # 由後依序處理參數
     else:
+        for job in joblist:
+            if context.args[0] == job.name:
+                context.bot.send_message(chat_id=update.effective_chat.id, text="此任務已存在，若需更改條件請先移除原有任務")
+                return
         input_interval = DEFAULT_INTEVAL*MINUTE
         scarp_args = {'id':update.effective_chat.id,'prev':''}
         if len(context.args) >1:
@@ -178,8 +176,7 @@ def callback_post_set(update:Update, context: CallbackContext):
 
             if input_interval == DEFAULT_INTEVAL*MINUTE:
                 context.bot.send_message(chat_id=update.effective_chat.id, text="使用預設檢查間隔")
-        joblist.append(jobq.run_repeating(
-        post_check, interval=input_interval,
+        joblist.append(jobq.run_repeating(post_check, interval=input_interval,
                         first=0, context=scarp_args,name= (f'{update.effective_user.id}.{context.args[0]}')))  # args[0] = boardname
         logging.info(f'The interval of added job is :{input_interval} secs')
         context.bot.send_message(chat_id=update.effective_chat.id, text="任務已增加，可使用 /status 查詢狀態")
