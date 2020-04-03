@@ -11,6 +11,7 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO)
 
+
 config = configparser.ConfigParser()
 config.read('config.ini')
 
@@ -112,7 +113,7 @@ def tidyup_jobs():
 
 def post_check(context: CallbackContext):
     scarp_args = context.job.context
-    
+
     new_scrap = scraper.getNewPosts(extBoardName(context.job.name), scarp_args['prev'])
 
     logging.info("Now running: {}".format(context.job.name))

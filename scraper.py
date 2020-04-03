@@ -2,6 +2,7 @@ from urllib.request import urlopen
 import requests
 import timesched,time, logging
 from bs4 import BeautifulSoup
+from bs4.element import ResultSet
 
 logging.basicConfig(
     handlers=[logging.FileHandler('scraper.log'),logging.StreamHandler()],
@@ -31,7 +32,8 @@ def getNewPosts(boardname:str, lastTimeScraped: str= ""):
             doneScraped, templist = scrap(lastTimeScraped, posts)
             newpostList = templist + newpostList
             bs = getBSObj(pttDomain.format(getPrevPageLink(bs)))
-            posts = bs.find_all(class_='r-ent').reverse() # PTT 的最新文章由下往上
+            posts = reversed(bs.find_all(class_='r-ent')) # PTT 的最新文章由下往上
+            print(type(posts))
             time.sleep(.5)
             scrapedtime+=1
 
