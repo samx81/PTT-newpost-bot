@@ -25,6 +25,7 @@ WELCOME_PHASE = """這裏是 PTT 新文章檢查小幫手，請使用
 POST_ITEM_TEMPLATE = "{}\nhttps://www.ptt.cc{}\n\n"
 
 # TODO: refactor code
+# TODO: all input convert to lowercase
 
 def start(update, context):
     context.bot.send_message(chat_id=update.effective_chat.id, text=WELCOME_PHASE, parse_mode=ParseMode.MARKDOWN)
@@ -159,7 +160,7 @@ def callback_post_set(update:Update, context: CallbackContext):
     # 由後依序處理參數
     else:
         for job in joblist:
-            if context.args[0] == job.name:
+            if str(context.args[0]).lower() == extBoardName(job.name):
                 context.bot.send_message(chat_id=update.effective_chat.id, text="此任務已存在，若需更改條件請先移除原有任務")
                 return
         input_interval = DEFAULT_INTEVAL*MINUTE

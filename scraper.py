@@ -65,7 +65,7 @@ def scrap(lastTimeScraped:str, posts):
     if lastTimeScraped:
         # 檢查最後存取值是否還在文章列表中
         tempbs = getBSObj(pttDomain.format(lastTimeScraped.replace('/bbs/',"")))
-        if not isinstance(tempbs, dict):
+        if not isinstance(tempbs, Exception):
             for post in posts:
                 titleItem = post.find(class_='title')
                 # 檢查最新貼文與上次是否相同
