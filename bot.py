@@ -1,5 +1,7 @@
 from telegram.ext import Updater, CallbackContext, Job, CommandHandler, MessageHandler,CallbackQueryHandler , Filters
 from telegram import Update, ParseMode, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.error import (TelegramError, Unauthorized, BadRequest, 
+                            TimedOut, ChatMigrated, NetworkError)
 from time import time
 from datetime import timedelta
 import configparser, os, pickle, logging
@@ -29,8 +31,6 @@ POST_ITEM_TEMPLATE = "{}\nhttps://www.ptt.cc{}\n\n"
 def start(update, context):
     context.bot.send_message(chat_id=update.effective_chat.id, 
         text=WELCOME_PHASE.format(DEFAULT_INTEVAL), parse_mode=ParseMode.MARKDOWN)
-
-# TODO: avoid flood 
 
 JOB_DATA = ('callback', 'interval', 'repeat', 'context', 'days', 'name', 'tzinfo')
 JOB_STATE = ('_remove', '_enabled')
@@ -226,6 +226,8 @@ def callback_show_status(update:Update, context: CallbackContext):
         status_output = "尚未安排任務"
     context.bot.send_message(chat_id=update.effective_chat.id, text= status_output)
 
+# 本來有想改寫這個用法，改用 telegram bot 內建的 user_data,
+# 但掛在 Heroku 上要有持續性（persistance）很麻煩，所以就放棄了
 def joblist_retrieve(user_id:int) -> list :
     if user_id not in track_job_dict:
         templist = list()
