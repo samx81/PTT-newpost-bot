@@ -16,20 +16,19 @@ config = configparser.ConfigParser()
 config.read('config.ini')
 
 MINUTE = 60
+HALF_DAY = 720
 DEFAULT_INTEVAL = int(os.environ.get('INTEVAL','15'))
 MAX_JOB_PER_ID = 4
 
 WELCOME_PHASE = """這裏是 PTT 新文章檢查小幫手，請使用
 **/check \[看板]** \[_時間(可選)_] \[_排除詞(可選)_] 下達檢查指令，
-時間預設 60 分鐘檢查一次，排除詞格式為 (term1/term2/...)
+時間預設 {} 分鐘檢查一次，排除詞格式為 (term1/term2/...)
 """
 POST_ITEM_TEMPLATE = "{}\nhttps://www.ptt.cc{}\n\n"
 
-# TODO: refactor code
-# TODO: all input convert to lowercase
-
 def start(update, context):
-    context.bot.send_message(chat_id=update.effective_chat.id, text=WELCOME_PHASE, parse_mode=ParseMode.MARKDOWN)
+    context.bot.send_message(chat_id=update.effective_chat.id, 
+        text=WELCOME_PHASE.format(DEFAULT_INTEVAL), parse_mode=ParseMode.MARKDOWN)
 
 # TODO: avoid flood 
 
@@ -101,10 +100,12 @@ def extUserId(jobname: str):
 
 # Using extra list to organize user's jobs
 # Iterate every job in JobQueue to append to list
+
 def tidyup_jobs():
     for job in jobq.jobs():
         # This job is always created at the start
         if job.name == 'save_jobs_job': continue
+        # If marked removed, don't put in user dict
         if job.removed: continue
 
         logging.info(f'Read job: {job.name}, Removed? {job.removed}')
@@ -115,25 +116,26 @@ def post_check(context: CallbackContext):
     scarp_args = context.job.context
 
     new_scrap = scraper.getNewPosts(extBoardName(context.job.name), scarp_args['prev'])
-
     logging.info("Now running: {}".format(context.job.name))
     
     if new_scrap['success']: 
+        # If no new post, simply end this job.
         if new_scrap['posts'] == scraper.NO_NEW_POST:
             return
         if 'error' in new_scrap:
             context.bot.send_message(chat_id=scarp_args['id'], text= new_scrap['error'])
+
+        # If does receive new post
         output_str = ""
         for post in new_scrap['posts']:
             termMatch = False
             # 各種條件過濾
-
+            
             if '[公告]' in post['title']:
                 termMatch = True
-            if 'exclude' in scarp_args:
-                for term in scarp_args['exclude']:
-                    if term in post['title']:
-                        termMatch = True
+            if ('exclude' in scarp_args) and \
+                any([word in post['title'] for word in scarp_args['exclude']]):
+                    termMatch = True
             if not termMatch:
                 output_str += POST_ITEM_TEMPLATE.format(post['title'],post['url'])
 
@@ -145,27 +147,27 @@ def post_check(context: CallbackContext):
         remove_from_joblist(context.job.name)
         context.bot.send_message(
             chat_id = scarp_args['id'], 
-            text= ''.join([new_scrap['error'],"\n看板名輸入有誤，請檢查並重新輸入"]))
+            text= ''.join([new_scrap['error'], "\n" + "看板名輸入有誤，請檢查並重新輸入"]))
 
 # TODO:過濾不正確參數 / error handling 
 def callback_post_set(update:Update, context: CallbackContext):
     # 最大任務數
     joblist = joblist_retrieve(update.effective_user.id)
     if  len(joblist)>= MAX_JOB_PER_ID:
-        context.bot.send_message(chat_id=update.effective_chat.id, text="任務已滿")
+        context.bot.send_message(chat_id=update.effective_chat.id, text= "任務已滿")
         return
-
     # 不正確的參數就排除
     if not context.args or len(context.args)>3:
-        context.bot.send_message(chat_id=update.effective_chat.id, text="請檢查參數是否輸入正確")
-    # 由後依序處理參數
-    else:
+        context.bot.send_message(chat_id=update.effective_chat.id, text= "請檢查參數是否輸入正確")
+    else: # 由後依序處理參數
         for job in joblist:
-            if str(context.args[0]).lower() == extBoardName(job.name):
+            if str(context.args[0]).lower() == extBoardName(job.name).lower():
                 context.bot.send_message(chat_id=update.effective_chat.id, text="此任務已存在，若需更改條件請先移除原有任務")
                 return
+        
         input_interval = DEFAULT_INTEVAL*MINUTE
         scarp_args = {'id':update.effective_chat.id,'prev':''}
+
         if len(context.args) >1:
             if len(context.args)==3:
                 excludeList = context.args[2].split('/')
@@ -173,24 +175,29 @@ def callback_post_set(update:Update, context: CallbackContext):
 
             # 檢查數字輸入
             int_or_parse = (lambda x: int(x) if x.isdigit() else pytimeparse.parse(x)/60)
-            input_interval = (lambda x:int(x*MINUTE) if x is not None and x > DEFAULT_INTEVAL and x <= 720 \
-                else DEFAULT_INTEVAL*MINUTE)(int_or_parse(context.args[1]))
+            input_interval = (lambda x:int(x * MINUTE) if (x is not None) and (x > DEFAULT_INTEVAL and x <= HALF_DAY) \
+                else DEFAULT_INTEVAL * MINUTE)(int_or_parse(context.args[1]))
 
             if input_interval == DEFAULT_INTEVAL*MINUTE:
-                context.bot.send_message(chat_id=update.effective_chat.id, text="使用預設檢查間隔")
-        joblist.append(jobq.run_repeating(post_check, interval=input_interval,
-                        first=0, context=scarp_args,name= (f'{update.effective_user.id}.{context.args[0]}')))  # args[0] = boardname
+                context.bot.send_message(chat_id=update.effective_chat.id, text= "使用預設檢查間隔")
+        
+        joblist.append(
+            jobq.run_repeating(
+                callback= post_check, interval= input_interval,
+                first= 0, context=scarp_args,
+                name= (f'{update.effective_user.id}.{context.args[0]}')))  # args[0] = boardname
         logging.info(f'The interval of added job is :{input_interval} secs')
-        context.bot.send_message(chat_id=update.effective_chat.id, text="任務已增加，可使用 /status 查詢狀態")
+        context.bot.send_message(chat_id=update.effective_chat.id, text= "任務已增加，可使用 /status 查詢狀態")
 
-# if list empty > remove item in dict?
 def callback_job_remove(update:Update, context: CallbackContext):
-    # job.stop()
+    # Generate Inline Keyboard
     keyboard = []
     for job in joblist_retrieve(update.effective_user.id):
         keyboard.append([InlineKeyboardButton(extBoardName(job.name), callback_data=job.name)])
     
+    # Attatch Keyboard & Send Msg
     if keyboard:
+        keyboard.append([InlineKeyboardButton('取消', callback_data='cancel')])
         reply_markup = InlineKeyboardMarkup(keyboard)
         context.bot.send_message(chat_id=update.effective_chat.id, text="選擇需撤回的任務",reply_markup=reply_markup)
     else:
@@ -198,9 +205,13 @@ def callback_job_remove(update:Update, context: CallbackContext):
 
 def callback_job_rm_selected(update:Update, context: CallbackContext):
     query = update.callback_query
-    remove_from_joblist(query.data)
 
-    query.edit_message_text(text="{} 已撤回".format(extBoardName(query.data)))
+    if query.data == 'cancel':
+        query.edit_message_text('取消撤回任務')
+    else:
+        remove_from_joblist(query.data)
+
+        query.edit_message_text(text="{} 已撤回".format(extBoardName(query.data)))
 
 def callback_show_status(update:Update, context: CallbackContext):
     status_output = ""
@@ -210,13 +221,10 @@ def callback_show_status(update:Update, context: CallbackContext):
         f"檢查間隔：{int(current_job.interval/60)} （分鐘）\n"
         f"排除關鍵字：{'/'.join(exclude_term)}\n"
         f"最後抓取值：https://www.ptt.cc{current_job.context['prev']}\n\n")
+
     if not status_output:
         status_output = "尚未安排任務"
     context.bot.send_message(chat_id=update.effective_chat.id, text= status_output)
-
-# let this cmd stick to remove cmd
-def callback_cancel(update:Update, context: CallbackContext):
-    context.bot.edit_message_text('已取消')
 
 def joblist_retrieve(user_id:int) -> list :
     if user_id not in track_job_dict:
@@ -235,7 +243,6 @@ def remove_from_joblist(jobname):
                 joblist_retrieve(extUserId(jobname)).remove(job)
             except ValueError as e:
                 logging.info(str(e))
-
 
 ### Bot set-up ###
 
@@ -277,12 +284,10 @@ dispatcher.add_handler(start_handler)
 status_handler = CommandHandler('status', callback_show_status)
 check_handler = CommandHandler('check', callback_post_set)
 remove_handler = CommandHandler('remove',callback_job_remove)
-cancel_handler = CommandHandler('cancel',callback_cancel)
 job_select_handler = CallbackQueryHandler(callback_job_rm_selected)
 
 dispatcher.add_handler(check_handler)
 dispatcher.add_handler(remove_handler)
-dispatcher.add_handler(cancel_handler)
 dispatcher.add_handler(status_handler)
 dispatcher.add_handler(job_select_handler)
 

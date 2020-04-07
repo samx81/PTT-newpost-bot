@@ -2,12 +2,6 @@ from urllib.request import urlopen
 import requests
 import timesched,time, logging
 from bs4 import BeautifulSoup
-from bs4.element import ResultSet
-
-logging.basicConfig(
-    handlers=[logging.FileHandler('scraper.log'),logging.StreamHandler()],
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    level=logging.INFO)
 
 pttDomain = 'https://www.ptt.cc/bbs/{}'
 header = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/74.0.3729.169 Safari/537.36'
@@ -19,7 +13,7 @@ def getNewPosts(boardname:str, lastTimeScraped: str= ""):
         bs = getBSObj(pttDomain.format(boardname + '/index.html'))
         # 如果回傳例外，丟回給 Bot 輸出
         if isinstance(bs,Exception):
-            return ({'success':False, 'error': bs})
+            return ({'success':False, 'error': str(bs.response)})
         
         doneScraped = False
         newpostList = []
@@ -33,7 +27,6 @@ def getNewPosts(boardname:str, lastTimeScraped: str= ""):
             newpostList = templist + newpostList
             bs = getBSObj(pttDomain.format(getPrevPageLink(bs)))
             posts = reversed(bs.find_all(class_='r-ent')) # PTT 的最新文章由下往上
-            print(type(posts))
             time.sleep(.5)
             scrapedtime+=1
 
@@ -56,7 +49,6 @@ def getBSObj(link:str):
         html = requests.get(link,header,cookies={'over18':'1'})
         html.raise_for_status()
         bs = BeautifulSoup(html.text,'html.parser')
-
         return bs
     except requests.exceptions.HTTPError as e:
         return e
